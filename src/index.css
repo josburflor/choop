@@ -1,0 +1,95 @@
+@import "tailwindcss";
+
+@theme {
+  --font-sans: "Inter", ui-sans-serif, system-ui, sans-serif;
+  --color-choop-orange: #F97316;
+  --color-choop-black: #0F0F0F;
+  --color-choop-gray: #1A1A1A;
+  --color-choop-gray-light: #262626;
+}
+
+@layer base {
+  * {
+    @apply border-neutral-800;
+  }
+  
+  body {
+    @apply bg-[#0F0F0F] text-white antialiased transition-colors duration-300;
+    font-feature-settings: "cv02", "cv03", "cv04", "cv11";
+  }
+
+  .light-theme body {
+    @apply bg-neutral-50 text-neutral-900;
+  }
+
+  .light-theme aside {
+    @apply bg-white border-neutral-200;
+  }
+
+  .light-theme .glass-card, 
+  .light-theme .bg-[#1A1A1A],
+  .light-theme .bg-[#262626] {
+    @apply bg-white border-neutral-200 text-neutral-900 shadow-sm;
+  }
+
+  .light-theme .text-neutral-500 {
+    @apply text-neutral-600;
+  }
+
+  .light-theme .text-neutral-400 {
+    @apply text-neutral-700;
+  }
+
+  .light-theme .text-neutral-300 {
+    @apply text-neutral-800;
+  }
+
+  .light-theme input,
+  .light-theme select {
+    @apply bg-white border-neutral-300 text-neutral-900 focus:ring-2 focus:ring-purple-500/20;
+  }
+
+  .light-theme .btn-secondary {
+    @apply bg-neutral-100 text-neutral-900 hover:bg-neutral-200 border border-neutral-200;
+  }
+
+  .light-theme .border-neutral-800 {
+    @apply border-neutral-200;
+  }
+
+  .light-theme .bg-neutral-800,
+  .light-theme .bg-neutral-800\/50,
+  .light-theme .bg-neutral-800\/30 {
+    @apply bg-neutral-100 border-neutral-200;
+  }
+}
+
+@layer utilities {
+  .custom-scrollbar::-webkit-scrollbar {
+    width: 6px;
+  }
+  
+  .custom-scrollbar::-webkit-scrollbar-track {
+    @apply bg-transparent;
+  }
+  
+  .custom-scrollbar::-webkit-scrollbar-thumb {
+    @apply bg-neutral-800 rounded-full;
+  }
+  
+  .custom-scrollbar::-webkit-scrollbar-thumb:hover {
+    @apply bg-neutral-700;
+  }
+
+  .glass-card {
+    @apply bg-[#1A1A1A] rounded-2xl border border-neutral-800 shadow-lg;
+  }
+
+  .btn-primary {
+    @apply px-6 py-3 bg-[#F97316] text-white rounded-xl font-semibold transition-all hover:bg-[#EA580C] active:scale-95 disabled:opacity-50 disabled:pointer-events-none;
+  }
+
+  .btn-secondary {
+    @apply px-6 py-3 bg-[#262626] text-white rounded-xl font-semibold transition-all hover:bg-[#333] active:scale-95 disabled:opacity-50 disabled:pointer-events-none;
+  }
+}

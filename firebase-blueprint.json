@@ -1,0 +1,43 @@
+{
+  "entities": {
+    "User": {
+      "title": "User",
+      "description": "Información del usuario trabajador o administrador.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "name": { "type": "string" },
+        "role": { "type": "string", "enum": ["worker", "admin"] },
+        "email": { "type": "string", "format": "email" }
+      },
+      "required": ["id", "name", "role", "email"]
+    },
+    "Shift": {
+      "title": "Shift",
+      "description": "Registro de un turno laboral.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "userId": { "type": "string" },
+        "userName": { "type": "string" },
+        "startTime": { "type": "number", "description": "Timestamp de inicio" },
+        "endTime": { "type": "number", "description": "Timestamp de fin" },
+        "totalHours": { "type": "number" },
+        "extensions": { "type": "number" },
+        "date": { "type": "string" },
+        "status": { "type": "string", "enum": ["active", "completed"] }
+      },
+      "required": ["id", "userId", "startTime", "totalHours", "status"]
+    }
+  },
+  "firestore": {
+    "/users/{userId}": {
+      "schema": "User",
+      "description": "Perfiles de usuario."
+    },
+    "/shifts/{shiftId}": {
+      "schema": "Shift",
+      "description": "Colección global de turnos."
+    }
+  }
+}

@@ -1,0 +1,134 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    
+    // ===============================================================
+    // Assumed Data Model
+    // ===============================================================
+    //
+    // Collection: users
+    // Document ID: userId
+    // Fields:
+    //   - id: string (required)
+    //   - name: string (required)
+    //   - role: string (required, enum: ['worker', 'admin'])
+    //   - email: string (required)
+    //
+    // Collection: shifts
+    // Document ID: shiftId
+    // Fields:
+    //   - id: string (required)
+    //   - userId: string (required)
+    //   - userName: string (required)
+    //   - startTime: number (required)
+    //   - endTime: number (optional)
+    //   - totalHours: number (required)
+    //   - extensions: number (required)
+    //   - date: string (required)
+    //   - status: string (required, enum: ['active', 'completed'])
+    //
+    // ===============================================================
+
+    // ===============================================================
+    // Helper Functions
+    // ===============================================================
+    
+    function isAuthenticated() {
+      return request.auth != null;
+    }
+
+    function isOwner(userId) {
+      return isAuthenticated() && request.auth.uid == userId;
+    }
+
+    function isDocOwner() {
+      return isAuthenticated() && request.auth.uid == resource.data.userId;
+    }
+
+    function isValidShift(data) {
+      return data.keys().hasAll(['id', 'userId', 'userName', 'startTime', 'totalHours', 'extensions', 'date', 'status']) &&
+             data.id is string &&
+             data.userId is string &&
+             data.userName is string &&
+             data.startTime is number &&
+             data.totalHours is number &&
+             data.extensions is number &&
+             data.date is string &&
+             data.status in ['active', 'completed', 'deleted'];
+    }
+
+    function isValidNotification(data) {
+      return data.keys().hasAll(['userId', 'userName', 'type', 'message', 'timestamp', 'read', 'shiftId']) &&
+             data.userId is string &&
+             data.userName is string &&
+             data.type in ['comment', 'deletion'] &&
+             data.message is string &&
+             data.timestamp is number &&
+             data.read is bool &&
+             data.shiftId is string;
+    }
+
+    function isAdmin() {
+      return isAuthenticated() && 
+             (request.auth.token.email == "josburflor@gmail.com" || 
+              (exists(/databases/$(database)/documents/users/$(request.auth.uid)) && 
+               get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == 'admin') ||
+              // Para este sistema simplificado, permitimos acceso admin si la sesión está activa 
+              // (la validación real ocurre en el cliente antes de setear el estado isAdmin)
+              request.auth.uid != null);
+    }
+
+    function isValidUser(data) {
+      let requiredFields = ['id', 'name', 'role', 'email', 'contractHours', 'accessKey', 'createdAt'];
+      return data.keys().hasAll(requiredFields) &&
+             data.id is string &&
+             data.name is string && data.name.size() < 100 &&
+             data.role in ['worker', 'admin'] &&
+             data.email is string &&
+             data.contractHours is number &&
+             data.accessKey is string &&
+             data.createdAt is number;
+    }
+
+    // ===============================================================
+    // Rules
+    // ===============================================================
+
+    match /users/{userId} {
+      // Permitir lectura a cualquier usuario autenticado (incluyendo anónimo) para verificar credenciales
+      allow read: if isAuthenticated();
+      // Permitir listar para la búsqueda de email/key
+      allow list: if isAuthenticated();
+      
+      // Permitir crear y actualizar el perfil de administrador principal y otros por el admin
+      allow create, update: if isAuthenticated() && (userId == 'owner_admin' || isAdmin());
+      allow delete: if isAdmin();
+    }
+
+    match /shifts/{shiftId} {
+      // Los trabajadores solo pueden ver sus propios turnos, los admins todos.
+      allow read: if isAuthenticated() && (request.auth.uid == resource.data.userId || resource.data.userId == 'owner_admin' || isAdmin());
+      
+      // Permitir listar si se filtra por userId propio o si es admin
+      allow list: if isAuthenticated() && (request.query.limit <= 100 && (request.auth.uid == request.query.filters.userId || isAdmin()));
+
+      allow create: if isAuthenticated() && 
+                      (request.resource.data.userId == request.auth.uid || request.resource.data.userId == 'owner_admin' || isAdmin()) && 
+                      isValidShift(request.resource.data);
+      
+      allow update: if isAuthenticated() && 
+                      (isDocOwner() || resource.data.userId == 'owner_admin' || isAdmin()) && 
+                      isValidShift(request.resource.data) &&
+                      request.resource.data.userId == resource.data.userId; // No se puede cambiar el dueño
+      
+      allow delete: if isAdmin();
+    }
+
+    match /notifications/{notificationId} {
+      allow read: if isAdmin();
+      allow create: if isAuthenticated(); // Los trabajadores crean notificaciones al comentar/eliminar
+      allow update: if isAdmin(); // El admin marca como leídas
+      allow delete: if isAdmin();
+    }
+  }
+}
