@@ -107,9 +107,15 @@ export default function App() {
     }
 
     const unsubAuth = onAuthStateChanged(auth, (firebaseUser) => {
-      // Siempre mantenemos una sesión anónima como base para que Firestore funcione
+      // Siempre intentamos una sesión anónima para Firestore
       if (!firebaseUser) {
-        signInAnonymously(auth).catch(err => console.error("Error with anonymous auth:", err));
+        signInAnonymously(auth).catch(err => {
+          // Ignoramos el error de operación restringida para evitar el log spam 
+          // pero permitimos que el flujo continúe
+          if (err.code !== 'auth/admin-restricted-operation') {
+            console.warn("Auth initialization note:", err.code);
+          }
+        });
       }
     });
 
