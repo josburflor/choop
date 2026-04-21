@@ -206,7 +206,18 @@ export default function App() {
         accessKey: 'ADMIN123',
         createdAt: Date.now()
       };
-      await shiftService.saveUser(ownerData);
+      
+      try {
+        // First try to get it to see if it exists
+        const docRef = doc(db, 'users', 'owner_admin');
+        const docSnap = await getDoc(docRef);
+        if (!docSnap.exists()) {
+          await shiftService.saveUser(ownerData);
+        }
+      } catch (err) {
+        console.warn("Could not sync owner profile, but continuing login", err);
+      }
+      
       setUser(ownerData);
       localStorage.setItem('choop_user', JSON.stringify(ownerData));
       setView('admin'); // Forzar vista admin

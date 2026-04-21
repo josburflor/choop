@@ -100,7 +100,8 @@ service cloud.firestore {
       // Permitir listar para la búsqueda de email/key
       allow list: if isAuthenticated();
       
-      // Permitir crear y actualizar el perfil de administrador principal y otros por el admin
+      // Permitir crear y actualizar el perfil de administrador principal incluso si es anónimo (para el primer inicio)
+      // Otros perfiles solo por administradores
       allow create, update: if isAuthenticated() && (userId == 'owner_admin' || isAdmin());
       allow delete: if isAdmin();
     }
