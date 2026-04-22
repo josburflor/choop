@@ -3,6 +3,9 @@ import {
   Clock, 
   History as HistoryIcon, 
   Play, 
+  Pause,
+  Coffee,
+  MapPin,
   Square, 
   Plus, 
   AlertCircle, 
@@ -32,7 +35,9 @@ import {
   ExternalLink,
   MessageSquare,
   Bell,
-  Download
+  Download,
+  Eye,
+  EyeOff
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { Button } from './components/ui/Button';
@@ -40,12 +45,13 @@ import { Card } from './components/ui/Card';
 import { Input } from './components/ui/Input';
 import { Modal } from './components/ui/Modal';
 import { Timer } from './components/Timer';
-import { Shift, User, Notification } from './types';
+import { Shift, User, Notification, Schedule } from './types';
+import { AccessKey } from './components/AccessKey';
 import { shiftService } from './services/shiftService';
 import { cn } from './lib/utils';
 import { auth, db } from './firebase';
 import { GoogleAuthProvider, onAuthStateChanged, signInAnonymously, signInWithPopup, signOut } from 'firebase/auth';
-import { doc, getDoc, setDoc } from 'firebase/firestore';
+import { doc, getDoc, setDoc, collection, onSnapshot, query, where } from 'firebase/firestore';
 import * as XLSX from 'xlsx';
 
 export default function App() {
@@ -55,7 +61,6 @@ export default function App() {
   const [allShifts, setAllShifts] = useState<Shift[]>([]);
   const [allUsers, setAllUsers] = useState<User[]>([]);
   const [view, setView] = useState<'dashboard' | 'history' | 'admin' | 'settings'>('dashboard');
-  const [theme, setTheme] = useState<'dark' | 'light'>('dark');
   const [inputHours, setInputHours] = useState<string>('');
   const [inputMinutes, setInputMinutes] = useState<string>('0');
   const [isAlertOpen, setIsAlertOpen] = useState(false);
@@ -68,6 +73,17 @@ export default function App() {
   const [adminFilterUser, setAdminFilterUser] = useState<string>('all');
   const [adminFilterMonth, setAdminFilterMonth] = useState<string>('all');
   const [adminFilterYear, setAdminFilterYear] = useState<string>(new Date().getFullYear().toString());
+  
+  // Schedule & Pause State
+  const [allSchedules, setAllSchedules] = useState<Schedule[]>([]);
+  const [isScheduleModalOpen, setIsScheduleModalOpen] = useState(false);
+  const [newSchedule, setNewSchedule] = useState({
+    userId: '',
+    date: new Date().toISOString().split('T')[0],
+    startTime: '09:00',
+    endTime: '18:00'
+  });
+  const [isPausing, setIsPausing] = useState(false);
   
   // Notifications & Comments State
   const [notifications, setNotifications] = useState<Notification[]>([]);
@@ -100,20 +116,19 @@ export default function App() {
 
   // Session Persistence & Auth Initialization
   useEffect(() => {
-    const savedTheme = localStorage.getItem('choop_theme') as 'dark' | 'light';
-    if (savedTheme) {
-      setTheme(savedTheme);
-      document.documentElement.classList.toggle('light-theme', savedTheme === 'light');
-    }
-
     const unsubAuth = onAuthStateChanged(auth, (firebaseUser) => {
       // Siempre intentamos una sesión anónima para Firestore
       if (!firebaseUser) {
         signInAnonymously(auth).catch(err => {
-          // Ignoramos el error de operación restringida para evitar el log spam 
-          // pero permitimos que el flujo continúe
-          if (err.code !== 'auth/admin-restricted-operation') {
-            console.warn("Auth initialization note:", err.code);
+          // Log detallado para diagnóstico
+          console.error("Firebase Auth Error Details:", {
+            code: err.code,
+            message: err.message,
+            stack: err.stack
+          });
+          
+          if (err.code === 'auth/admin-restricted-operation') {
+            console.error("Action Required: Enable Anonymous Auth in Firebase Console AND check if 'Email enumeration protection' is enabled in Auth Settings.");
           }
         });
       }
@@ -157,6 +172,18 @@ export default function App() {
       setHistory(shifts);
     });
 
+    const unsubSchedules = onSnapshot(
+      isAdmin 
+        ? collection(db, 'schedules') 
+        : query(collection(db, 'schedules'), where('userId', '==', user.id)),
+      (snapshot) => {
+        setAllSchedules(snapshot.docs.map(doc => doc.data() as Schedule));
+      },
+      (error) => {
+        console.error("Error subscribing to schedules:", error);
+      }
+    );
+
     let unsubAll: (() => void) | undefined;
     let unsubNotifications: (() => void) | undefined;
     let unsubUsers: (() => void) | undefined;
@@ -164,35 +191,24 @@ export default function App() {
     if (isAdmin) {
       unsubAll = shiftService.subscribeToAllShifts((shifts) => {
         setAllShifts(shifts);
-      });
+      }, (err) => console.error("Error all shifts:", err));
       unsubNotifications = shiftService.subscribeToNotifications((notifs) => {
         setNotifications(notifs);
-      });
+      }, (err) => console.error("Error notifications:", err));
       unsubUsers = shiftService.subscribeToUsers((users) => {
         setAllUsers(users);
-      });
+      }, (err) => console.error("Error users:", err));
     }
 
     return () => {
       unsubActive();
       unsubHistory();
+      unsubSchedules();
       if (unsubAll) unsubAll();
       if (unsubNotifications) unsubNotifications();
       if (unsubUsers) unsubUsers();
     };
   }, [user, isAdmin]);
-
-  const toggleTheme = () => {
-    const newTheme = theme === 'dark' ? 'light' : 'dark';
-    setTheme(newTheme);
-    localStorage.setItem('choop_theme', newTheme);
-    // Usamos una clase en el body para mayor control
-    if (newTheme === 'light') {
-      document.body.classList.add('light-theme');
-    } else {
-      document.body.classList.remove('light-theme');
-    }
-  };
 
   const handleLogin = async () => {
     setLoginError('');
@@ -201,50 +217,53 @@ export default function App() {
       return;
     }
 
-    // Special case for owner if not registered yet
-    if (loginData.email === 'josburflor@gmail.com' && loginData.accessKey === 'ADMIN123') {
-      const ownerData: User = {
-        id: 'owner_admin',
-        email: 'josburflor@gmail.com',
-        name: 'Administrador Principal',
-        role: 'admin',
-        contractHours: 0,
-        accessKey: 'ADMIN123',
-        createdAt: Date.now()
-      };
-      
-      try {
-        // First try to get it to see if it exists
-        const docRef = doc(db, 'users', 'owner_admin');
-        const docSnap = await getDoc(docRef);
-        if (!docSnap.exists()) {
-          await shiftService.saveUser(ownerData);
+    try {
+      if (loginData.email === 'josburflor@gmail.com' && loginData.accessKey === 'ADMIN123') {
+        const ownerData: User = {
+          id: 'owner_admin',
+          email: 'josburflor@gmail.com',
+          name: 'Administrador Principal',
+          role: 'admin',
+          contractHours: 0,
+          accessKey: 'ADMIN123',
+          createdAt: Date.now()
+        };
+        
+        try {
+          const docRef = doc(db, 'users', 'owner_admin');
+          const docSnap = await getDoc(docRef);
+          if (!docSnap.exists()) {
+            await shiftService.saveUser(ownerData);
+          }
+        } catch (err: any) {
+          console.warn("Could not sync owner profile, but continuing login", err);
         }
-      } catch (err) {
-        console.warn("Could not sync owner profile, but continuing login", err);
-      }
-      
-      setUser(ownerData);
-      localStorage.setItem('choop_user', JSON.stringify(ownerData));
-      setView('admin'); // Forzar vista admin
-      return;
-    }
-
-    const foundUser = await shiftService.getUserByCredentials(loginData.email, loginData.accessKey);
-    if (foundUser) {
-      if (foundUser.status === 'inactive') {
-        setLoginError('Tu cuenta está desactivada temporalmente. Contacta con el administrador.');
+        
+        setUser(ownerData);
+        localStorage.setItem('choop_user', JSON.stringify(ownerData));
+        setView('admin');
         return;
       }
-      setUser(foundUser);
-      localStorage.setItem('choop_user', JSON.stringify(foundUser));
-      if (foundUser.role === 'admin' || foundUser.email === 'josburflor@gmail.com') {
-        setView('admin');
+
+      const foundUser = await shiftService.getUserByCredentials(loginData.email, loginData.accessKey);
+      if (foundUser) {
+        if (foundUser.status === 'inactive') {
+          setLoginError('Tu cuenta está desactivada temporalmente. Contacta con el administrador.');
+          return;
+        }
+        setUser(foundUser);
+        localStorage.setItem('choop_user', JSON.stringify(foundUser));
+        if (foundUser.role === 'admin' || foundUser.email === 'josburflor@gmail.com') {
+          setView('admin');
+        } else {
+          setView('dashboard');
+        }
       } else {
-        setView('dashboard');
+        setLoginError('Credenciales incorrectas. Verifica tu email y clave.');
       }
-    } else {
-      setLoginError('Credenciales incorrectas. Verifica tu email y clave.');
+    } catch (error: any) {
+      console.error("Login Error:", error);
+      setLoginError('Hubo un problema al conectar con el servidor. Inténtalo más tarde.');
     }
   };
 
@@ -562,6 +581,14 @@ export default function App() {
     oscillator.stop(audioContext.currentTime + 1);
   };
 
+  const formatMsToDuration = (ms: number) => {
+    const totalSeconds = Math.floor(ms / 1000);
+    const m = Math.floor(totalSeconds / 60);
+    const s = totalSeconds % 60;
+    if (m === 0) return `${s}s`;
+    return `${m}m ${s}s`;
+  };
+
   const handleStartShift = async () => {
     if (!user) return;
     const hours = parseFloat(inputHours) || 0;
@@ -631,6 +658,52 @@ export default function App() {
     setView('history');
   };
 
+  const handleTogglePause = async () => {
+    if (!activeShift) return;
+    
+    const now = Date.now();
+    const updatedShift: Shift = { ...activeShift };
+    const breaks = [...(activeShift.breaks || [])];
+
+    if (activeShift.status === 'active') {
+      // Iniciar pausa
+      updatedShift.status = 'paused';
+      breaks.push({ startTime: now });
+    } else if (activeShift.status === 'paused') {
+      // Finalizar pausa
+      updatedShift.status = 'active';
+      if (breaks.length > 0) {
+        breaks[breaks.length - 1].endTime = now;
+      }
+    }
+
+    updatedShift.breaks = breaks;
+    await shiftService.saveShift(updatedShift);
+  };
+
+  const handleSaveSchedule = async () => {
+    if (!newSchedule.userId || !newSchedule.date) return;
+    
+    const targetUser = allUsers.find(u => u.id === newSchedule.userId);
+    const schedule: Schedule = {
+      id: `sch_${Date.now()}`,
+      userId: newSchedule.userId,
+      userName: targetUser?.name || 'Usuario',
+      date: newSchedule.date,
+      startTime: newSchedule.startTime,
+      endTime: newSchedule.endTime,
+      status: 'planned',
+      createdAt: Date.now()
+    };
+
+    try {
+      await setDoc(doc(db, 'schedules', schedule.id), schedule);
+      setIsScheduleModalOpen(false);
+    } catch (error) {
+      console.error("Error saving schedule:", error);
+    }
+  };
+
   const handleAutoFinish = React.useCallback(async () => {
     if (activeShift) {
       await handleFinishShift();
@@ -645,7 +718,7 @@ export default function App() {
 
   if (isLoading) {
     return (
-      <div className="min-h-screen bg-[#0F0F0F] flex items-center justify-center">
+      <div className="min-h-screen bg-app-bg flex items-center justify-center">
         <div className="w-12 h-12 border-4 border-[#F97316]/20 border-t-[#F97316] rounded-full animate-spin" />
       </div>
     );
@@ -653,14 +726,14 @@ export default function App() {
 
   if (!user) {
     return (
-      <div className="min-h-screen bg-[#0F0F0F] flex items-center justify-center p-6">
+      <div className="min-h-screen bg-app-bg flex flex-col items-center justify-center p-6">
         <Card className="max-w-md w-full text-center space-y-8 py-12">
           <div className="w-20 h-20 bg-[#F97316] rounded-3xl flex items-center justify-center mx-auto shadow-xl shadow-[#F97316]/20">
             <Clock className="text-white" size={40} />
           </div>
           <div className="space-y-2">
-            <h1 className="text-4xl font-black tracking-tighter">CHOOP</h1>
-            <p className="text-neutral-400 font-medium">Acceso al Sistema de Turnos</p>
+            <h1 className="text-4xl font-black tracking-tighter text-white">CHOOP</h1>
+            <p className="text-app-text-muted font-medium italic">Acceso al Sistema de Turnos</p>
           </div>
           
           <div className="space-y-4 text-left">
@@ -690,7 +763,7 @@ export default function App() {
             Entrar al Programa
           </Button>
 
-          <p className="text-[10px] text-neutral-600 uppercase tracking-widest font-bold">
+          <p className="text-[10px] text-app-text-muted uppercase tracking-widest font-bold">
             Solicita tu clave al administrador de la empresa
           </p>
         </Card>
@@ -707,14 +780,14 @@ export default function App() {
   });
 
   return (
-    <div className="min-h-screen bg-[#0F0F0F] text-white flex font-sans">
+    <div className="min-h-screen bg-app-bg text-app-text flex font-sans">
       {/* Sidebar */}
-      <aside className="w-20 md:w-64 bg-[#1A1A1A] border-r border-neutral-800 flex flex-col p-4 md:p-6">
+      <aside className="w-20 md:w-64 bg-app-surface border-r border-app-border flex flex-col p-4 md:p-6">
         <div className="flex items-center gap-3 mb-12 px-2">
-          <div className="w-10 h-10 bg-[#F97316] rounded-xl flex items-center justify-center shadow-lg shadow-[#F97316]/20">
+          <div className="w-10 h-10 bg-choop-orange rounded-xl flex items-center justify-center shadow-lg shadow-orange-500/20">
             <Clock className="text-white" size={24} />
           </div>
-          <span className="text-2xl font-black tracking-tighter hidden md:block">CHOOP</span>
+          <span className="text-2xl font-black tracking-tighter hidden md:block text-app-text">CHOOP</span>
         </div>
 
         <nav className="flex-1 space-y-2">
@@ -724,7 +797,7 @@ export default function App() {
                 onClick={() => setView('dashboard')}
                 className={cn(
                   "w-full flex items-center gap-4 p-4 rounded-xl transition-all group",
-                  view === 'dashboard' ? "bg-[#F97316] text-white" : "text-neutral-500 hover:bg-neutral-800 hover:text-white"
+                  view === 'dashboard' ? "bg-choop-orange text-white" : "text-app-text-muted hover:bg-app-surface-hover hover:text-app-text"
                 )}
               >
                 <LayoutDashboard size={20} />
@@ -734,7 +807,7 @@ export default function App() {
                 onClick={() => setView('history')}
                 className={cn(
                   "w-full flex items-center gap-4 p-4 rounded-xl transition-all group",
-                  view === 'history' ? "bg-[#F97316] text-white" : "text-neutral-500 hover:bg-neutral-800 hover:text-white"
+                  view === 'history' ? "bg-choop-orange text-white" : "text-app-text-muted hover:bg-app-surface-hover hover:text-app-text"
                 )}
               >
                 <HistoryIcon size={20} />
@@ -748,7 +821,7 @@ export default function App() {
               onClick={() => setView('admin')}
               className={cn(
                 "w-full flex items-center gap-4 p-4 rounded-xl transition-all group",
-                view === 'admin' ? "bg-purple-600 text-white" : "text-neutral-500 hover:bg-neutral-800 hover:text-white"
+                view === 'admin' ? "bg-purple-600 text-white" : "text-app-text-muted hover:bg-app-surface-hover hover:text-app-text"
               )}
             >
               <Shield size={20} />
@@ -765,30 +838,29 @@ export default function App() {
           )}
         </nav>
 
-        <div className="pt-6 border-t border-neutral-800 space-y-2">
-          <div className="px-4 py-3 bg-[#262626] rounded-xl mb-4 hidden md:block">
+        <div className="pt-6 border-t border-app-border space-y-4">
+          <div className="px-4 py-3 bg-app-surface-hover rounded-xl mb-4 hidden md:block">
             <div className="flex items-center gap-3 mb-2">
-              <div className="w-8 h-8 rounded-full bg-neutral-700 overflow-hidden">
+              <div className="w-8 h-8 rounded-full bg-app-surface border border-app-border overflow-hidden">
                 {user.photoURL ? (
                   <img src={user.photoURL} alt={user.name} className="w-full h-full object-cover" referrerPolicy="no-referrer" />
                 ) : (
-                  <UserIcon size={16} className="m-auto mt-2 text-neutral-500" />
+                  <UserIcon size={16} className="m-auto mt-2 text-app-text-muted" />
                 )}
               </div>
               <div className="flex-1 overflow-hidden">
-                <p className="text-xs font-bold truncate">{user.name}</p>
+                <p className="text-xs font-bold truncate text-app-text">{user.name}</p>
                 <p className={cn(
-                  "text-[8px] font-black uppercase tracking-widest",
-                  isAdmin ? "text-purple-500" : "text-[#F97316]"
+                   "text-[8px] font-black uppercase tracking-widest",
+                   isAdmin ? "text-purple-500" : "text-choop-orange"
                 )}>
                   {isAdmin ? 'Administrador' : 'Trabajador'}
                 </p>
               </div>
             </div>
-            <p className="text-[10px] font-bold text-neutral-500 uppercase tracking-widest mb-1">Tu Clave</p>
-            <div className="flex items-center gap-2 text-[#F97316] font-mono font-bold text-sm">
-              <Key size={12} />
-              {user.accessKey}
+            <p className="text-[10px] font-bold text-app-text-muted uppercase tracking-widest mb-1">Tu Clave</p>
+            <div className="flex items-center gap-2 text-choop-orange font-mono font-bold text-sm">
+              <AccessKey accessKey={user.accessKey} className="w-full" />
             </div>
           </div>
           {isAdmin && (
@@ -796,7 +868,7 @@ export default function App() {
               onClick={() => setView('settings')}
               className={cn(
                 "w-full flex items-center gap-4 p-4 rounded-xl transition-all group",
-                view === 'settings' ? "bg-blue-600 text-white" : "text-neutral-500 hover:bg-neutral-800 hover:text-white"
+                view === 'settings' ? "bg-blue-600 text-white" : "text-app-text-muted hover:bg-app-surface-hover hover:text-app-text"
               )}
             >
               <Settings size={20} />
@@ -805,7 +877,7 @@ export default function App() {
           )}
           <button 
             onClick={handleLogout}
-            className="w-full flex items-center gap-4 p-4 rounded-xl text-neutral-500 hover:bg-rose-500/10 hover:text-rose-500 transition-all"
+            className="w-full flex items-center gap-4 p-4 rounded-xl text-app-text-muted hover:bg-rose-500/10 hover:text-rose-500 transition-all"
           >
             <LogOut size={20} />
             <span className="font-semibold hidden md:block">Salir</span>
@@ -828,20 +900,20 @@ export default function App() {
                 <div className="flex items-center justify-between mb-8">
                   <div>
                     <h2 className="text-4xl font-bold mb-2">¡Hola, {user.name.split(' ')[0]}! 👋</h2>
-                    <p className="text-neutral-500">Gestiona tu jornada laboral de forma eficiente.</p>
+                    <p className="text-app-text-muted">Gestiona tu jornada laboral de forma eficiente.</p>
                   </div>
                   <div className="text-right hidden md:block">
-                    <p className="text-xs font-bold text-neutral-500 uppercase tracking-widest mb-1">Contrato Semanal</p>
-                    <p className="text-xl font-black text-[#F97316]">{user.contractHours}h / semana</p>
+                    <p className="text-xs font-bold text-app-text-muted uppercase tracking-widest mb-1">Contrato Semanal</p>
+                    <p className="text-xl font-black text-choop-orange">{user.contractHours}h / semana</p>
                   </div>
                 </div>
 
                 {/* Progreso Semanal */}
-                <Card padding="sm" className="bg-[#1A1A1A] border-neutral-800">
+                <Card padding="sm" className="bg-app-surface border-app-border">
                   <div className="flex justify-between items-center mb-4">
                     <div className="flex items-center gap-2">
                       <div className="w-2 h-2 bg-purple-500 rounded-full" />
-                      <span className="text-xs font-bold uppercase tracking-widest text-neutral-400">Horas Restantes de Contrato</span>
+                      <span className="text-xs font-bold uppercase tracking-widest text-app-text-muted">Horas Restantes de Contrato</span>
                     </div>
                     <div className="flex items-center gap-4">
                       {history.filter(s => s.status !== 'deleted').reduce((acc, curr) => acc + curr.totalHours, 0) > user.contractHours && (
@@ -869,7 +941,7 @@ export default function App() {
                     <Play size={40} className="text-[#F97316] ml-1" fill="currentColor" />
                   </div>
                   <h3 className="text-2xl font-bold mb-4">¿Listo para empezar?</h3>
-                  <p className="text-neutral-400 mb-10 max-w-sm mx-auto">
+                  <p className="text-app-text-muted mb-10 max-w-sm mx-auto">
                     Indica cuántas horas planeas trabajar hoy para iniciar tu cronómetro.
                   </p>
                   
@@ -915,7 +987,7 @@ export default function App() {
                           </>
                         )}
                       </div>
-                      <p className="text-neutral-400 text-sm">Iniciado a las {new Date(activeShift.startTime).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</p>
+                      <p className="text-app-text-muted text-sm">Iniciado a las {new Date(activeShift.startTime).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</p>
                     </div>
                     {activeShift.extensions > 0 && (
                       <div className="bg-[#262626] px-4 py-2 rounded-full text-xs font-bold text-[#F97316]">
@@ -931,19 +1003,59 @@ export default function App() {
                     onFinish={handleAutoFinish}
                     weeklyHoursDone={history.filter(s => s.status !== 'deleted').reduce((acc, curr) => acc + curr.totalHours, 0)}
                     contractHours={user.contractHours}
+                    status={activeShift.status}
+                    breaks={activeShift.breaks}
                   />
 
                   <div className="grid grid-cols-2 gap-4 mt-12">
-                    <Button variant="primary" onClick={() => setIsExtendOpen(true)} className="flex items-center justify-center gap-2">
-                      <Plus size={20} />
-                      Extender Turno
+                    <Button 
+                      variant={activeShift.status === 'paused' ? 'primary' : 'secondary'} 
+                      onClick={handleTogglePause} 
+                      className="flex items-center justify-center gap-2"
+                    >
+                      {activeShift.status === 'paused' ? <Play size={20} /> : <Coffee size={20} />}
+                      {activeShift.status === 'paused' ? 'Reanudar' : 'Tomar Pausa'}
                     </Button>
                     <Button variant="secondary" onClick={handleFinishShift} className="flex items-center justify-center gap-2">
                       <Square size={18} fill="currentColor" />
                       Finalizar Turno
                     </Button>
+                    <Button variant="secondary" onClick={() => setIsExtendOpen(true)} className="col-span-2 flex items-center justify-center gap-2 border-neutral-800">
+                      <Plus size={20} />
+                      Extender Turno
+                    </Button>
                   </div>
                 </Card>
+              )}
+
+              {/* Próximos Turnos (Planificación) */}
+              {!activeShift && allSchedules.filter(s => s.userId === user?.id && s.status === 'planned').length > 0 && (
+                <div className="mt-12 space-y-6">
+                  <h3 className="text-xl font-bold flex items-center gap-2">
+                    <Calendar size={20} className="text-emerald-500" />
+                    Tus Próximos Turnos
+                  </h3>
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                    {allSchedules.filter(s => s.userId === user?.id && s.status === 'planned').map(sch => (
+                      <Card key={sch.id} padding="sm" className="border-emerald-500/20 bg-emerald-500/5">
+                        <div className="flex justify-between items-start mb-4">
+                          <div className="flex items-center gap-3">
+                            <div className="w-10 h-10 bg-emerald-500/20 rounded-xl flex items-center justify-center text-emerald-500">
+                              <Calendar size={20} />
+                            </div>
+                            <div>
+                              <p className="font-bold">{new Date(sch.date).toLocaleDateString('es-ES', { weekday: 'long', day: 'numeric', month: 'long' })}</p>
+                              <p className="text-xs text-neutral-500">{sch.startTime} - {sch.endTime}</p>
+                            </div>
+                          </div>
+                          <span className="text-[8px] font-black bg-emerald-500 text-white px-1.5 py-0.5 rounded uppercase tracking-widest">
+                            Planificado
+                          </span>
+                        </div>
+                      </Card>
+                    ))}
+                  </div>
+                </div>
               )}
 
               {/* Stats Rápidas */}
@@ -953,7 +1065,7 @@ export default function App() {
                     <Calendar size={24} />
                   </div>
                   <div>
-                    <p className="text-xs text-neutral-500 font-bold uppercase">Hoy</p>
+                    <p className="text-xs text-app-text-muted font-bold uppercase">Hoy</p>
                     <p className="text-xl font-bold">{new Date().toLocaleDateString('es-ES', { weekday: 'long' })}</p>
                   </div>
                 </Card>
@@ -962,7 +1074,7 @@ export default function App() {
                     <Clock size={24} />
                   </div>
                   <div>
-                    <p className="text-xs text-neutral-500 font-bold uppercase">Total Hoy</p>
+                    <p className="text-xs text-app-text-muted font-bold uppercase">Total Hoy</p>
                     <p className="text-xl font-bold">
                       {history.filter(s => s.date === new Date().toLocaleDateString()).reduce((acc, curr) => acc + curr.totalHours, 0).toFixed(1)}h
                     </p>
@@ -973,7 +1085,7 @@ export default function App() {
                     <Plus size={24} />
                   </div>
                   <div>
-                    <p className="text-xs text-neutral-500 font-bold uppercase">Horas Extras</p>
+                    <p className="text-xs text-app-text-muted font-bold uppercase">Horas Extras</p>
                     <p className="text-xl font-bold">
                       {Math.max(0, history.reduce((acc, curr) => acc + curr.totalHours, 0) - user.contractHours).toFixed(1)}h
                     </p>
@@ -992,7 +1104,7 @@ export default function App() {
               <header className="mb-12 flex flex-col md:flex-row md:items-center justify-between gap-6">
                 <div>
                   <h2 className="text-4xl font-bold mb-2">Mi Historial</h2>
-                  <p className="text-neutral-500">Revisa tus misiones pasadas.</p>
+                  <p className="text-app-text-muted">Revisa tus misiones pasadas.</p>
                 </div>
                 <div className="flex gap-4">
                   <Button variant="secondary" size="sm" className="flex items-center gap-2">
@@ -1016,7 +1128,7 @@ export default function App() {
                     <Card 
                       key={shift.id} 
                       padding="sm" 
-                      className="flex flex-wrap items-center justify-between gap-6 hover:border-[#F97316]/50 transition-colors cursor-pointer group"
+                      className="flex flex-wrap items-center justify-between gap-6 hover:border-choop-orange/50 transition-colors cursor-pointer group"
                       onClick={() => {
                         setSelectedShift(shift);
                         setShiftComment(shift.comment || '');
@@ -1024,12 +1136,12 @@ export default function App() {
                       }}
                     >
                       <div className="flex items-center gap-6">
-                        <div className="w-14 h-14 bg-[#262626] rounded-2xl flex items-center justify-center text-[#F97316] group-hover:scale-110 transition-transform">
+                        <div className="w-14 h-14 bg-app-surface-hover rounded-2xl flex items-center justify-center text-choop-orange group-hover:scale-110 transition-transform">
                           <Clock size={28} />
                         </div>
                         <div>
                           <p className="text-lg font-bold">{shift.date}</p>
-                          <p className="text-sm text-neutral-500">
+                          <p className="text-sm text-app-text-muted">
                             {new Date(shift.startTime).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })} - 
                             {shift.endTime ? new Date(shift.endTime).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : 'En curso'}
                           </p>
@@ -1038,14 +1150,14 @@ export default function App() {
 
                       <div className="flex items-center gap-12">
                         <div className="text-center">
-                          <p className="text-[10px] font-bold text-neutral-500 uppercase tracking-widest mb-1">Horas</p>
-                          <p className="text-xl font-black text-[#F97316]">{shift.totalHours.toFixed(1)}h</p>
+                          <p className="text-[10px] font-bold text-app-text-muted uppercase tracking-widest mb-1">Horas</p>
+                          <p className="text-xl font-black text-choop-orange">{shift.totalHours.toFixed(1)}h</p>
                         </div>
                         <div className="text-center">
-                          <p className="text-[10px] font-bold text-neutral-500 uppercase tracking-widest mb-1">Ext.</p>
+                          <p className="text-[10px] font-bold text-app-text-muted uppercase tracking-widest mb-1">Ext.</p>
                           <p className="text-xl font-bold">{shift.extensions}</p>
                         </div>
-                        <div className="p-2 text-neutral-700 group-hover:text-white transition-colors">
+                        <div className="p-2 text-app-text-muted group-hover:text-app-text transition-colors">
                           <ChevronRight size={24} />
                         </div>
                       </div>
@@ -1064,41 +1176,10 @@ export default function App() {
             >
               <header className="mb-12">
                 <h2 className="text-4xl font-bold mb-2">Ajustes</h2>
-                <p className="text-neutral-500">Personaliza tu experiencia y conoce más sobre CHOOP.</p>
+                <p className="text-app-text-muted">Personaliza tu experiencia y conoce más sobre CHOOP.</p>
               </header>
 
               <div className="space-y-8">
-                {/* Tema */}
-                <Card>
-                  <div className="flex items-center justify-between">
-                    <div className="flex items-center gap-4">
-                      <div className="w-12 h-12 bg-blue-500/10 rounded-xl flex items-center justify-center text-blue-500">
-                        {theme === 'dark' ? <Moon size={24} /> : <Sun size={24} />}
-                      </div>
-                      <div>
-                        <h3 className="font-bold text-lg">Apariencia</h3>
-                        <p className="text-sm text-neutral-500">Cambia entre modo claro y oscuro.</p>
-                      </div>
-                    </div>
-                    <button 
-                      onClick={toggleTheme}
-                      className="flex items-center gap-2 px-6 py-3 bg-neutral-800 hover:bg-neutral-700 rounded-xl font-bold transition-all border border-neutral-700"
-                    >
-                      {theme === 'dark' ? (
-                        <>
-                          <Sun size={18} className="text-amber-400" />
-                          Modo Claro
-                        </>
-                      ) : (
-                        <>
-                          <Moon size={18} className="text-blue-400" />
-                          Modo Oscuro
-                        </>
-                      )}
-                    </button>
-                  </div>
-                </Card>
-
                 {/* Diseñador */}
                 <Card>
                   <div className="flex items-center gap-4 mb-6">
@@ -1107,17 +1188,17 @@ export default function App() {
                     </div>
                     <div>
                       <h3 className="font-bold text-lg">Información del Diseñador</h3>
-                      <p className="text-sm text-neutral-500">Créditos de desarrollo y diseño.</p>
+                      <p className="text-sm text-app-text-muted">Créditos de desarrollo y diseño.</p>
                     </div>
                   </div>
                   <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                    <div className="p-4 bg-neutral-800/50 rounded-xl border border-neutral-800">
-                      <p className="text-[10px] font-bold text-neutral-500 uppercase tracking-widest mb-1">Desarrollado por</p>
+                    <div className="p-4 bg-app-surface-hover/50 rounded-xl border border-app-border">
+                      <p className="text-[10px] font-bold text-app-text-muted uppercase tracking-widest mb-1">Desarrollado por</p>
                       <p className="font-bold text-lg">Burgos Diseño</p>
                     </div>
-                    <div className="p-4 bg-neutral-800/50 rounded-xl border border-neutral-800">
-                      <p className="text-[10px] font-bold text-neutral-500 uppercase tracking-widest mb-1">Contacto Soporte</p>
-                      <div className="flex items-center gap-2 font-bold text-lg text-[#F97316]">
+                    <div className="p-4 bg-app-surface-hover/50 rounded-xl border border-app-border">
+                      <p className="text-[10px] font-bold text-app-text-muted uppercase tracking-widest mb-1">Contacto Soporte</p>
+                      <div className="flex items-center gap-2 font-bold text-lg text-choop-orange">
                         <Phone size={16} />
                         +34 6413476049
                       </div>
@@ -1133,26 +1214,26 @@ export default function App() {
                     </div>
                     <div>
                       <h3 className="font-bold text-lg">Términos y Condiciones</h3>
-                      <p className="text-sm text-neutral-500">Aspectos legales y privacidad.</p>
+                      <p className="text-sm text-app-text-muted">Aspectos legales y privacidad.</p>
                     </div>
                   </div>
-                  <div className="p-6 bg-neutral-800/30 rounded-xl border border-neutral-800 text-sm text-neutral-400 leading-relaxed max-h-60 overflow-y-auto custom-scrollbar">
-                    <h4 className="font-bold text-white mb-2">1. Uso del Servicio</h4>
+                  <div className="p-6 bg-app-surface rounded-xl border border-app-border text-sm text-app-text-muted leading-relaxed max-h-60 overflow-y-auto custom-scrollbar">
+                    <h4 className="font-bold text-app-text mb-2">1. Uso del Servicio</h4>
                     <p className="mb-4">CHOOP es una herramienta de gestión de turnos. El usuario es responsable de la veracidad de los datos introducidos.</p>
                     
-                    <h4 className="font-bold text-white mb-2">2. Privacidad</h4>
+                    <h4 className="font-bold text-app-text mb-2">2. Privacidad</h4>
                     <p className="mb-4">Sus datos personales y registros de turnos se almacenan de forma segura en Firebase. No compartimos información con terceros.</p>
                     
-                    <h4 className="font-bold text-white mb-2">3. Responsabilidad</h4>
+                    <h4 className="font-bold text-app-text mb-2">3. Responsabilidad</h4>
                     <p className="mb-4">La empresa no se hace responsable de pérdidas de datos debidas a un mal uso de las claves de acceso personales.</p>
                     
-                    <h4 className="font-bold text-white mb-2">4. Propiedad Intelectual</h4>
+                    <h4 className="font-bold text-app-text mb-2">4. Propiedad Intelectual</h4>
                     <p>El diseño y código de esta aplicación son propiedad de sus respectivos creadores bajo licencia de uso corporativo.</p>
                   </div>
                 </Card>
 
                 <div className="text-center pt-8">
-                  <p className="text-[10px] text-neutral-600 font-bold uppercase tracking-[0.2em]">CHOOP v4.0.0 • 2026</p>
+                  <p className="text-[10px] text-app-text-muted font-bold uppercase tracking-[0.2em]">CHOOP v4.0.0 • 2026</p>
                 </div>
               </div>
             </motion.div>
@@ -1168,89 +1249,26 @@ export default function App() {
                 <div>
                   <div className="flex items-center gap-3 mb-2">
                     <Shield className="text-purple-500" size={32} />
-                    <h2 className="text-4xl font-bold">Panel de Control</h2>
+                    <h2 className="text-4xl font-bold text-app-text">Panel de Control</h2>
                   </div>
-                  <p className="text-neutral-500">Supervisión global de turnos y empleados.</p>
+                  <p className="text-app-text-muted">Supervisión global de turnos y empleados.</p>
                 </div>
                 
                 <div className="flex flex-wrap gap-4">
-                  <div className="relative">
-                    <Button 
-                      variant="secondary" 
-                      onClick={() => setIsNotificationsOpen(!isNotificationsOpen)}
-                      className="relative p-3"
-                    >
-                      <Bell size={20} />
-                      {notifications.filter(n => !n.read).length > 0 && (
-                        <span className="absolute -top-1 -right-1 w-5 h-5 bg-rose-500 text-white text-[10px] font-bold rounded-full flex items-center justify-center border-2 border-[#0F0F0F]">
-                          {notifications.filter(n => !n.read).length}
-                        </span>
-                      )}
-                    </Button>
-                    
-                    <AnimatePresence>
-                      {isNotificationsOpen && (
-                        <motion.div 
-                          initial={{ opacity: 0, y: 10, scale: 0.95 }}
-                          animate={{ opacity: 1, y: 0, scale: 1 }}
-                          exit={{ opacity: 0, y: 10, scale: 0.95 }}
-                          className="absolute right-0 mt-2 w-80 bg-[#1A1A1A] border border-neutral-800 rounded-2xl shadow-2xl z-50 overflow-hidden"
-                        >
-                          <div className="p-4 border-b border-neutral-800 flex justify-between items-center">
-                            <h4 className="font-bold">Notificaciones</h4>
-                            <span className="text-[10px] font-bold text-neutral-500 uppercase tracking-widest">Recientes</span>
-                          </div>
-                          <div className="max-h-96 overflow-y-auto custom-scrollbar">
-                            {notifications.length === 0 ? (
-                              <div className="p-8 text-center text-neutral-500 text-sm italic">
-                                No hay notificaciones.
-                              </div>
-                            ) : (
-                              notifications.slice(0, 3).map(n => (
-                                <div 
-                                  key={n.id} 
-                                  className={cn(
-                                    "p-4 border-b border-neutral-800 hover:bg-neutral-800/50 transition-colors cursor-pointer",
-                                    !n.read && "bg-purple-500/5"
-                                  )}
-                                  onClick={() => {
-                                    handleMarkNotificationRead(n.id);
-                                    viewEmployeeHistory(n.userId);
-                                    setIsNotificationsOpen(false);
-                                  }}
-                                >
-                                  <div className="flex gap-3">
-                                    <div className={cn(
-                                      "w-8 h-8 rounded-lg flex items-center justify-center shrink-0",
-                                      n.type === 'comment' ? "bg-blue-500/10 text-blue-500" : "bg-rose-500/10 text-rose-500"
-                                    )}>
-                                      {n.type === 'comment' ? <MessageSquare size={16} /> : <Trash2 size={16} />}
-                                    </div>
-                                    <div className="space-y-1">
-                                      <p className="text-xs font-bold leading-tight">{n.message}</p>
-                                      <p className="text-[10px] text-neutral-500">
-                                        {new Date(n.timestamp).toLocaleString()}
-                                      </p>
-                                    </div>
-                                  </div>
-                                </div>
-                              ))
-                            )}
-                          </div>
-                        </motion.div>
-                      )}
-                    </AnimatePresence>
-                  </div>
+                  <Button onClick={() => setIsScheduleModalOpen(true)} className="flex items-center gap-2 bg-emerald-600 hover:bg-emerald-700">
+                    <Calendar size={18} />
+                    Planificar Turno
+                  </Button>
                   <Button onClick={() => handleOpenUserModal()} className="flex items-center gap-2 bg-purple-600 hover:bg-purple-700">
                     <UserPlus size={18} />
                     Nuevo Empleado
                   </Button>
                   <div className="relative">
-                    <UsersIcon className="absolute left-4 top-1/2 -translate-y-1/2 text-neutral-500" size={18} />
+                    <UsersIcon className="absolute left-4 top-1/2 -translate-y-1/2 text-app-text-muted" size={18} />
                     <select 
                       value={adminFilterUser}
                       onChange={(e) => setAdminFilterUser(e.target.value)}
-                      className="bg-[#1A1A1A] border border-neutral-800 rounded-xl pl-12 pr-6 py-3 text-white outline-none focus:border-purple-500 transition-all appearance-none cursor-pointer"
+                      className="bg-app-surface border border-app-border rounded-xl pl-12 pr-6 py-3 text-app-text outline-none focus:border-purple-500 transition-all appearance-none cursor-pointer"
                     >
                       <option value="all">Todos los empleados</option>
                       {allUsers.map(u => (
@@ -1283,11 +1301,11 @@ export default function App() {
                   </div>
 
                   <div className="relative group">
-                    <Calendar className="absolute left-4 top-1/2 -translate-y-1/2 text-neutral-500 group-focus-within:text-purple-500 transition-colors" size={20} />
+                    <Calendar className="absolute left-4 top-1/2 -translate-y-1/2 text-app-text-muted group-focus-within:text-purple-500 transition-colors" size={20} />
                     <select 
                       value={adminFilterYear} 
                       onChange={(e) => setAdminFilterYear(e.target.value)}
-                      className="bg-[#1A1A1A] border border-neutral-800 rounded-xl pl-12 pr-6 py-3 text-white outline-none focus:border-purple-500 transition-all appearance-none cursor-pointer"
+                      className="bg-app-surface border border-app-border rounded-xl pl-12 pr-6 py-3 text-app-text outline-none focus:border-purple-500 transition-all appearance-none cursor-pointer"
                     >
                       <option value="2024">2024</option>
                       <option value="2025">2025</option>
@@ -1304,6 +1322,74 @@ export default function App() {
                       Descargar Resumen Mensual
                     </Button>
                   )}
+
+                  <div className="relative ml-auto">
+                    <Button 
+                      variant="secondary" 
+                      onClick={() => setIsNotificationsOpen(!isNotificationsOpen)}
+                      className="relative p-3"
+                    >
+                      <Bell size={20} />
+                      {notifications.filter(n => !n.read).length > 0 && (
+                        <span className="absolute -top-1 -right-1 w-5 h-5 bg-rose-500 text-white text-[10px] font-bold rounded-full flex items-center justify-center border-2 border-app-surface">
+                          {notifications.filter(n => !n.read).length}
+                        </span>
+                      )}
+                    </Button>
+                    
+                    <AnimatePresence>
+                      {isNotificationsOpen && (
+                        <motion.div 
+                          initial={{ opacity: 0, y: 10, scale: 0.95 }}
+                          animate={{ opacity: 1, y: 0, scale: 1 }}
+                          exit={{ opacity: 0, y: 10, scale: 0.95 }}
+                          className="absolute right-0 mt-2 w-80 bg-app-surface border border-app-border rounded-2xl shadow-2xl z-50 overflow-hidden"
+                        >
+                          <div className="p-4 border-b border-app-border flex justify-between items-center">
+                            <h4 className="font-bold">Notificaciones</h4>
+                            <span className="text-[10px] font-bold text-app-text-muted uppercase tracking-widest">Recientes</span>
+                          </div>
+                          <div className="max-h-96 overflow-y-auto custom-scrollbar">
+                            {notifications.length === 0 ? (
+                              <div className="p-8 text-center text-app-text-muted text-sm italic">
+                                No hay notificaciones.
+                              </div>
+                            ) : (
+                              notifications.slice(0, 3).map(n => (
+                                <div 
+                                  key={n.id} 
+                                  className={cn(
+                                    "p-4 border-b border-app-border hover:bg-app-surface-hover transition-colors cursor-pointer",
+                                    !n.read && "bg-purple-500/5"
+                                  )}
+                                  onClick={() => {
+                                    handleMarkNotificationRead(n.id);
+                                    viewEmployeeHistory(n.userId);
+                                    setIsNotificationsOpen(false);
+                                  }}
+                                >
+                                  <div className="flex gap-3">
+                                    <div className={cn(
+                                      "w-8 h-8 rounded-lg flex items-center justify-center shrink-0",
+                                      n.type === 'comment' ? "bg-blue-500/10 text-blue-500" : "bg-rose-500/10 text-rose-500"
+                                    )}>
+                                      {n.type === 'comment' ? <MessageSquare size={16} /> : <Trash2 size={16} />}
+                                    </div>
+                                    <div className="space-y-1">
+                                      <p className="text-xs font-bold leading-tight text-app-text">{n.message}</p>
+                                      <p className="text-[10px] text-app-text-muted">
+                                        {new Date(n.timestamp).toLocaleString()}
+                                      </p>
+                                    </div>
+                                  </div>
+                                </div>
+                              ))
+                            )}
+                          </div>
+                        </motion.div>
+                      )}
+                    </AnimatePresence>
+                  </div>
                 </div>
               </header>
 
@@ -1317,22 +1403,22 @@ export default function App() {
                   </h3>
                   <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
                     {allUsers.filter(u => u.role === 'admin').map(u => (
-                      <Card 
-                        key={u.id} 
-                        padding="sm" 
-                        className="border-neutral-800/50 transition-all hover:border-purple-500/30 group cursor-pointer"
-                        onClick={() => handleOpenUserModal(u)}
-                      >
-                        <div className="flex justify-between items-start mb-4">
-                          <div className="relative">
-                            <div className="w-12 h-12 bg-neutral-800 rounded-xl flex items-center justify-center text-neutral-400 overflow-hidden">
-                              {u.photoURL ? (
-                                <img src={u.photoURL} alt={u.name} className="w-full h-full object-cover" referrerPolicy="no-referrer" />
-                              ) : (
-                                <UserIcon size={24} />
-                              )}
-                            </div>
-                          </div>
+                  <Card 
+                    key={u.id} 
+                    padding="sm" 
+                    className="border-app-border transition-all hover:border-purple-500/30 group cursor-pointer"
+                    onClick={() => handleOpenUserModal(u)}
+                  >
+                    <div className="flex justify-between items-start mb-4">
+                      <div className="relative">
+                        <div className="w-12 h-12 bg-app-surface-hover rounded-xl flex items-center justify-center text-app-text-muted overflow-hidden">
+                          {u.photoURL ? (
+                            <img src={u.photoURL} alt={u.name} className="w-full h-full object-cover" referrerPolicy="no-referrer" />
+                          ) : (
+                            <UserIcon size={24} />
+                          )}
+                        </div>
+                      </div>
                           <div className="flex gap-2 opacity-0 group-hover:opacity-100 transition-opacity">
                             <button 
                               onClick={(e) => { e.stopPropagation(); handleOpenUserModal(u); }}
@@ -1350,19 +1436,13 @@ export default function App() {
                             </button>
                           </div>
                         </div>
-                        <h4 className="font-bold text-lg">{u.name}</h4>
-                        <p className="text-sm text-neutral-500 mb-4">{u.email}</p>
-                        
-                        <div className="space-y-3 pt-4 border-t border-neutral-800/50">
-                          <div className="flex justify-between items-center">
-                            <div className="flex items-center gap-2 text-xs text-neutral-400">
-                              <Key size={14} />
-                              Clave Acceso
-                            </div>
-                            <span className="text-sm font-mono font-bold text-[#F97316]">{u.accessKey}</span>
-                          </div>
-                        </div>
-                      </Card>
+                    <h4 className="font-bold text-lg">{u.name}</h4>
+                    <p className="text-sm text-app-text-muted mb-4">{u.email}</p>
+                    
+                    <div className="space-y-3 pt-4 border-t border-app-border">
+                      <AccessKey accessKey={u.accessKey} />
+                    </div>
+                  </Card>
                     ))}
                   </div>
                 </div>
@@ -1375,28 +1455,28 @@ export default function App() {
                   </h3>
                   <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
                     {allUsers.filter(u => u.role === 'worker').map(u => (
-                      <Card 
-                        key={u.id} 
-                        padding="sm" 
-                        className="border-neutral-800/50 transition-all hover:border-purple-500/30 group cursor-pointer"
-                        onClick={() => handleOpenUserModal(u)}
-                      >
-                        <div className="flex justify-between items-start mb-4">
-                          <div className="relative">
-                            <div className="w-12 h-12 bg-neutral-800 rounded-xl flex items-center justify-center text-neutral-400 overflow-hidden">
-                              {u.photoURL ? (
-                                <img src={u.photoURL} alt={u.name} className="w-full h-full object-cover" referrerPolicy="no-referrer" />
-                              ) : (
-                                <UserIcon size={24} />
-                              )}
-                            </div>
-                            {u.role !== 'admin' && (
-                              <div className={cn(
-                                "absolute -bottom-1 -right-1 w-4 h-4 rounded-full border-2 border-[#0F0F0F]",
-                                u.status === 'inactive' ? "bg-rose-500" : "bg-emerald-500"
-                              )} />
-                            )}
-                          </div>
+                  <Card 
+                    key={u.id} 
+                    padding="sm" 
+                    className="border-app-border transition-all hover:border-purple-500/30 group cursor-pointer"
+                    onClick={() => handleOpenUserModal(u)}
+                  >
+                    <div className="flex justify-between items-start mb-4">
+                      <div className="relative">
+                        <div className="w-12 h-12 bg-app-surface-hover rounded-xl flex items-center justify-center text-app-text-muted overflow-hidden">
+                          {u.photoURL ? (
+                            <img src={u.photoURL} alt={u.name} className="w-full h-full object-cover" referrerPolicy="no-referrer" />
+                          ) : (
+                            <UserIcon size={24} />
+                          )}
+                        </div>
+                        {u.role !== 'admin' && (
+                          <div className={cn(
+                            "absolute -bottom-1 -right-1 w-4 h-4 rounded-full border-2 border-app-surface",
+                            u.status === 'inactive' ? "bg-rose-500" : "bg-emerald-500"
+                          )} />
+                        )}
+                      </div>
                           <div className="flex gap-2 opacity-0 group-hover:opacity-100 transition-opacity">
                             {u.role !== 'admin' && (
                               <button 
@@ -1448,43 +1528,37 @@ export default function App() {
                             </span>
                           )}
                         </h4>
-                        <p className="text-sm text-neutral-500 mb-4">{u.email}</p>
+                        <p className="text-sm text-app-text-muted mb-4">{u.email}</p>
                         
                         <Button 
                           variant="secondary" 
                           size="sm" 
-                          className="w-full mb-4 flex items-center justify-center gap-2 border-neutral-800 hover:border-emerald-500/50 hover:text-emerald-500"
+                          className="w-full mb-4 flex items-center justify-center gap-2 border-app-border hover:border-emerald-500/50 hover:text-emerald-500"
                           onClick={(e) => { e.stopPropagation(); viewEmployeeHistory(u.id); }}
                         >
                           <HistoryIcon size={16} />
                           Ver Historial de Horas
                         </Button>
 
-                        <div className="space-y-3 pt-4 border-t border-neutral-800/50">
+                        <div className="space-y-3 pt-4 border-t border-app-border">
                           <div className="flex justify-between items-center">
-                            <div className="flex items-center gap-2 text-xs text-neutral-400">
+                            <div className="flex items-center gap-2 text-xs text-app-text-muted">
                               <Briefcase size={14} />
                               Contrato
                             </div>
                             <span className="text-sm font-bold text-purple-500">{u.contractHours}h / sem</span>
                           </div>
-                          <div className="flex justify-between items-center">
-                            <div className="flex items-center gap-2 text-xs text-neutral-400">
-                              <Key size={14} />
-                              Clave Acceso
-                            </div>
-                            <span className="text-sm font-mono font-bold text-[#F97316]">{u.accessKey}</span>
-                          </div>
+                          <AccessKey accessKey={u.accessKey} />
+                        </div>
                           {u.phone && (
                             <div className="flex justify-between items-center">
-                              <div className="flex items-center gap-2 text-xs text-neutral-400">
+                              <div className="flex items-center gap-2 text-xs text-app-text-muted">
                                 <Phone size={14} />
                                 Teléfono
                               </div>
-                              <span className="text-sm font-bold text-neutral-300">{u.phone}</span>
+                              <span className="text-sm font-bold text-app-text">{u.phone}</span>
                             </div>
                           )}
-                        </div>
                       </Card>
                     ))}
                   </div>
@@ -1494,19 +1568,19 @@ export default function App() {
               <div className="grid grid-cols-1 md:grid-cols-4 gap-6 mb-12">
                 <Card padding="sm" className="bg-purple-500/5 border-purple-500/20">
                   <p className="text-xs font-bold text-purple-500 uppercase tracking-widest mb-2">Total Turnos</p>
-                  <p className="text-3xl font-black">{allShifts.length}</p>
+                  <p className="text-3xl font-black text-app-text">{allShifts.length}</p>
                 </Card>
                 <Card padding="sm" className="bg-emerald-500/5 border-emerald-500/20">
                   <p className="text-xs font-bold text-emerald-500 uppercase tracking-widest mb-2">Activos Ahora</p>
-                  <p className="text-3xl font-black">{allShifts.filter(s => s.status === 'active').length}</p>
+                  <p className="text-3xl font-black text-app-text">{allShifts.filter(s => s.status === 'active').length}</p>
                 </Card>
                 <Card padding="sm" className="bg-blue-500/5 border-blue-500/20">
                   <p className="text-xs font-bold text-blue-500 uppercase tracking-widest mb-2">Total Horas</p>
-                  <p className="text-3xl font-black">{allShifts.reduce((acc, curr) => acc + curr.totalHours, 0).toFixed(1)}h</p>
+                  <p className="text-3xl font-black text-app-text">{allShifts.reduce((acc, curr) => acc + curr.totalHours, 0).toFixed(1)}h</p>
                 </Card>
                 <Card padding="sm" className="bg-orange-500/5 border-orange-500/20">
                   <p className="text-xs font-bold text-orange-500 uppercase tracking-widest mb-2">Horas Extras Totales</p>
-                  <p className="text-3xl font-black">
+                  <p className="text-3xl font-black text-app-text">
                     {allUsers.reduce((acc, u) => {
                       const userShifts = allShifts.filter(s => s.userId === u.id);
                       const totalHours = userShifts.reduce((sum, s) => sum + s.totalHours, 0);
@@ -1517,25 +1591,25 @@ export default function App() {
               </div>
 
               <div id="recent-records" className="space-y-4">
-                <h3 className="text-xl font-bold mb-6 flex items-center gap-2">
+                <h3 className="text-xl font-bold mb-6 flex items-center gap-2 text-app-text">
                   <HistoryIcon size={20} />
                   Registros Recientes {adminFilterUser !== 'all' && ` - ${allUsers.find(u => u.id === adminFilterUser)?.name}`}
                 </h3>
                 
                 {filteredShifts.length === 0 ? (
-                  <Card className="text-center py-20 text-neutral-500 italic">
+                  <Card className="text-center py-20 text-app-text-muted italic bg-app-surface border-app-border">
                     No se encontraron registros para este filtro.
                   </Card>
                 ) : (
                   filteredShifts.map((shift) => (
-                    <Card key={shift.id} padding="sm" className="flex flex-wrap items-center justify-between gap-6 hover:bg-neutral-800/30 transition-all border-neutral-800/50">
+                    <Card key={shift.id} padding="sm" className="flex flex-wrap items-center justify-between gap-6 hover:bg-app-surface-hover transition-all border-app-border">
                       <div className="flex items-center gap-6">
-                        <div className="w-12 h-12 bg-neutral-800 rounded-xl flex items-center justify-center text-neutral-400">
+                        <div className="w-12 h-12 bg-app-surface-hover rounded-xl flex items-center justify-center text-app-text-muted">
                           <UserIcon size={24} />
                         </div>
                         <div>
-                          <p className="text-lg font-bold">{shift.userName}</p>
-                          <div className="flex items-center gap-2 text-sm text-neutral-500">
+                          <p className="text-lg font-bold text-app-text">{shift.userName}</p>
+                          <div className="flex items-center gap-2 text-sm text-app-text-muted">
                             <Calendar size={14} />
                             {shift.date}
                             <span className="mx-1">•</span>
@@ -1549,34 +1623,34 @@ export default function App() {
                         <div className={cn(
                           "px-4 py-1.5 rounded-full text-[10px] font-black uppercase tracking-widest",
                           shift.status === 'active' ? "bg-emerald-500/10 text-emerald-500" : 
-                          shift.status === 'deleted' ? "bg-rose-500/10 text-rose-500" : "bg-neutral-800 text-neutral-500"
+                          shift.status === 'deleted' ? "bg-rose-500/10 text-rose-500" : "bg-app-surface-hover text-app-text-muted"
                         )}>
                           {shift.status === 'active' ? 'En curso' : 
                            shift.status === 'deleted' ? 'Eliminado' : 'Completado'}
                         </div>
                         <div className="text-center min-w-[80px]">
-                          <p className="text-[10px] font-bold text-neutral-500 uppercase tracking-widest mb-1">Horas</p>
+                          <p className="text-[10px] font-bold text-app-text-muted uppercase tracking-widest mb-1">Horas</p>
                           <p className="text-xl font-black text-purple-500">{shift.totalHours.toFixed(1)}h</p>
                         </div>
                         <div className="text-center min-w-[60px]">
-                          <p className="text-[10px] font-bold text-neutral-500 uppercase tracking-widest mb-1">Ext.</p>
-                          <p className="text-xl font-bold">{shift.extensions}</p>
+                          <p className="text-[10px] font-bold text-app-text-muted uppercase tracking-widest mb-1">Ext.</p>
+                          <p className="text-xl font-bold text-app-text">{shift.extensions}</p>
                         </div>
                       </div>
                       
                       {/* Mostrar Comentarios en el Panel Admin */}
                       {(shift.comment || shift.deletionComment) && (
-                        <div className="w-full mt-4 p-4 bg-neutral-900/50 rounded-xl border border-neutral-800/50">
+                        <div className="w-full mt-4 p-4 bg-app-surface-hover/50 rounded-xl border border-app-border">
                           <div className="flex items-start gap-3">
                             <MessageSquare size={16} className={cn(
                               "mt-1",
                               shift.status === 'deleted' ? "text-rose-500" : "text-blue-500"
                             )} />
                             <div>
-                              <p className="text-[10px] font-bold text-neutral-500 uppercase tracking-widest mb-1">
+                              <p className="text-[10px] font-bold text-app-text-muted uppercase tracking-widest mb-1">
                                 {shift.status === 'deleted' ? 'Motivo de Eliminación' : 'Comentario del Trabajador'}
                               </p>
-                              <p className="text-sm text-neutral-300 italic">
+                              <p className="text-sm text-app-text italic">
                                 "{shift.status === 'deleted' ? shift.deletionComment : shift.comment}"
                               </p>
                               {shift.deletedAt && (
@@ -1607,7 +1681,7 @@ export default function App() {
           <div className="w-20 h-20 bg-rose-500/10 rounded-3xl flex items-center justify-center mx-auto">
             <AlertCircle size={40} className="text-rose-500" />
           </div>
-          <p className="text-neutral-400">
+          <p className="text-app-text-muted">
             Tu tiempo de jornada está llegando a su fin. ¿Deseas extender tu turno o finalizarlo ahora?
           </p>
           <div className="grid grid-cols-1 gap-3 pt-4">
@@ -1685,7 +1759,7 @@ export default function App() {
             />
             <div className="grid grid-cols-2 gap-4">
               <div className="space-y-2">
-                <label className="text-xs font-bold text-neutral-500 uppercase tracking-widest">Rol del Usuario</label>
+                <label className="text-xs font-bold text-app-text-muted uppercase tracking-widest">Rol del Usuario</label>
                 <select 
                   value={userDataForm.role}
                   onChange={(e) => setUserDataForm({...userDataForm, role: e.target.value})}
@@ -1705,7 +1779,7 @@ export default function App() {
             
             {userDataForm.role !== 'admin' && (
               <div className="space-y-2">
-                <label className="text-xs font-bold text-neutral-500 uppercase tracking-widest">Estado del Empleado</label>
+                <label className="text-xs font-bold text-app-text-muted uppercase tracking-widest">Estado del Empleado</label>
                 <div className="grid grid-cols-2 gap-3">
                   <button
                     onClick={() => setUserDataForm({...userDataForm, status: 'active'})}
@@ -1737,6 +1811,7 @@ export default function App() {
 
             <Input 
               label="Clave Acceso"
+              type="password"
               placeholder="AUTO"
               value={userDataForm.accessKey}
               onChange={(e) => setUserDataForm({...userDataForm, accessKey: e.target.value})}
@@ -1749,11 +1824,11 @@ export default function App() {
             />
             
             <div className="space-y-2">
-              <label className="text-xs font-bold text-neutral-500 uppercase tracking-widest">
+              <label className="text-xs font-bold text-app-text-muted uppercase tracking-widest">
                 Foto del Empleado
               </label>
               <div className="flex items-center gap-4">
-                <div className="w-16 h-16 bg-neutral-800 rounded-xl flex items-center justify-center text-neutral-400 overflow-hidden border border-neutral-700">
+                <div className="w-16 h-16 bg-app-surface rounded-xl flex items-center justify-center text-app-text-muted overflow-hidden border border-app-border">
                   {userDataForm.photoURL ? (
                     <img src={userDataForm.photoURL} alt="Preview" className="w-full h-full object-cover" referrerPolicy="no-referrer" />
                   ) : (
@@ -1783,7 +1858,7 @@ export default function App() {
             </div>
           </div>
 
-          <div className="flex gap-3 pt-6 sticky bottom-0 bg-[#1A1A1A] py-2 border-t border-neutral-800">
+          <div className="flex gap-3 pt-6 sticky bottom-0 bg-app-surface py-2 border-t border-app-border">
             <Button variant="secondary" className="flex-1" onClick={() => setIsUserModalOpen(false)}>
               Cancelar
             </Button>
@@ -1814,25 +1889,60 @@ export default function App() {
         {selectedShift && (
           <div className="space-y-6">
             <div className="grid grid-cols-2 gap-4">
-              <div className="p-4 bg-neutral-800/50 rounded-xl border border-neutral-800">
-                <p className="text-[10px] font-bold text-neutral-500 uppercase tracking-widest mb-1">Fecha</p>
+              <div className="p-4 bg-app-surface-hover/50 rounded-xl border border-app-border">
+                <p className="text-[10px] font-bold text-app-text-muted uppercase tracking-widest mb-1">Fecha</p>
                 <p className="font-bold">{selectedShift.date}</p>
               </div>
-              <div className="p-4 bg-neutral-800/50 rounded-xl border border-neutral-800">
-                <p className="text-[10px] font-bold text-neutral-500 uppercase tracking-widest mb-1">Total Horas</p>
-                <p className="font-bold text-[#F97316]">{selectedShift.totalHours.toFixed(1)}h</p>
+              <div className="p-4 bg-app-surface-hover/50 rounded-xl border border-app-border">
+                <p className="text-[10px] font-bold text-app-text-muted uppercase tracking-widest mb-1">Total Horas</p>
+                <p className="font-bold text-choop-orange">{selectedShift.totalHours.toFixed(1)}h</p>
               </div>
             </div>
+
+            {selectedShift.breaks && selectedShift.breaks.length > 0 && (
+              <div className="space-y-3">
+                <h4 className="text-xs font-bold text-app-text-muted uppercase tracking-widest flex items-center gap-2">
+                  <Coffee size={14} className="text-amber-500" />
+                  Historial de Descansos
+                </h4>
+                <div className="space-y-2 max-h-40 overflow-y-auto custom-scrollbar pr-2">
+                  {selectedShift.breaks.map((b, idx) => (
+                    <div key={idx} className="flex justify-between items-center p-3 bg-app-surface rounded-xl border border-app-border">
+                      <div className="flex items-center gap-3">
+                        <div className="w-8 h-8 rounded-lg bg-amber-500/10 flex items-center justify-center text-amber-500">
+                          <span className="text-[10px] font-bold">{idx + 1}</span>
+                        </div>
+                        <div>
+                          <p className="text-xs font-bold">Descanso</p>
+                          <p className="text-[10px] text-app-text-muted">
+                            {new Date(b.startTime).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })} - 
+                            {b.endTime ? new Date(b.endTime).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : 'Actual'}
+                          </p>
+                        </div>
+                      </div>
+                      <span className="text-xs font-bold text-app-text-muted">
+                        {b.endTime ? formatMsToDuration(b.endTime - b.startTime) : 'En curso'}
+                      </span>
+                    </div>
+                  ))}
+                </div>
+                <div className="p-2 text-right">
+                  <p className="text-[10px] text-app-text-muted font-bold uppercase tracking-widest">
+                    Total Descanso: {formatMsToDuration(selectedShift.breaks.reduce((acc, b) => acc + (b.endTime ? b.endTime - b.startTime : 0), 0))}
+                  </p>
+                </div>
+              </div>
+            )}
 
             {!isDeletingShift ? (
               <>
                 <div className="space-y-2">
-                  <label className="text-xs font-bold text-neutral-500 uppercase tracking-widest">Comentario / Observación</label>
+                  <label className="text-xs font-bold text-app-text-muted uppercase tracking-widest">Comentario / Observación</label>
                   <textarea 
                     value={shiftComment}
                     onChange={(e) => setShiftComment(e.target.value)}
                     placeholder="Escribe aquí si tuviste algún inconveniente..."
-                    className="w-full bg-[#1A1A1A] border border-neutral-800 rounded-xl px-4 py-3 text-white outline-none focus:border-[#F97316] transition-all min-h-[100px] resize-none"
+                    className="w-full bg-app-surface border border-app-border rounded-xl px-4 py-3 text-app-text outline-none focus:border-choop-orange transition-all min-h-[100px] resize-none"
                   />
                 </div>
 
@@ -1880,6 +1990,64 @@ export default function App() {
             )}
           </div>
         )}
+      </Modal>
+      
+      {/* Modal de Planificación de Turnos */}
+      <Modal
+        isOpen={isScheduleModalOpen}
+        onClose={() => setIsScheduleModalOpen(false)}
+        title="Planificar Turno"
+      >
+        <div className="space-y-6">
+          <div>
+            <label className="text-sm font-medium text-app-text-muted mb-2 block">Empleado</label>
+            <select 
+              value={newSchedule.userId}
+              onChange={(e) => setNewSchedule({...newSchedule, userId: e.target.value})}
+              className="w-full bg-[#1A1A1A] border border-neutral-800 rounded-xl px-4 py-3 text-white outline-none focus:border-emerald-500 transition-all appearance-none cursor-pointer"
+            >
+              <option value="">Seleccionar empleado...</option>
+              {allUsers.map(u => (
+                <option key={u.id} value={u.id}>{u.name}</option>
+              ))}
+            </select>
+          </div>
+
+          <Input 
+            label="Fecha"
+            type="date"
+            value={newSchedule.date}
+            onChange={(e) => setNewSchedule({...newSchedule, date: e.target.value})}
+          />
+
+          <div className="grid grid-cols-2 gap-4">
+            <Input 
+              label="Hora Inicio"
+              type="time"
+              value={newSchedule.startTime}
+              onChange={(e) => setNewSchedule({...newSchedule, startTime: e.target.value})}
+            />
+            <Input 
+              label="Hora Fin"
+              type="time"
+              value={newSchedule.endTime}
+              onChange={(e) => setNewSchedule({...newSchedule, endTime: e.target.value})}
+            />
+          </div>
+
+          <div className="flex gap-3 pt-4">
+            <Button variant="secondary" className="flex-1" onClick={() => setIsScheduleModalOpen(false)}>
+              Cancelar
+            </Button>
+            <Button 
+              className="flex-1 bg-emerald-600 hover:bg-emerald-700 font-bold"
+              onClick={handleSaveSchedule}
+              disabled={!newSchedule.userId || !newSchedule.date}
+            >
+              Guardar Planificación
+            </Button>
+          </div>
+        </div>
       </Modal>
 
       {/* Modal de Confirmación de Eliminación */}

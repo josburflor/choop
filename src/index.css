@@ -2,65 +2,60 @@
 
 @theme {
   --font-sans: "Inter", ui-sans-serif, system-ui, sans-serif;
+  
   --color-choop-orange: #F97316;
   --color-choop-black: #0F0F0F;
   --color-choop-gray: #1A1A1A;
   --color-choop-gray-light: #262626;
+
+  /* Semantic Colors - Link to CSS Variables */
+  --color-app-bg: var(--app-bg);
+  --color-app-surface: var(--app-surface);
+  --color-app-surface-hover: var(--app-surface-hover);
+  --color-app-border: var(--app-border);
+  --color-app-text: var(--app-text);
+  --color-app-text-muted: var(--app-text-muted);
+  --color-app-input: var(--app-input);
+}
+
+:root {
+  /* Dark Mode Only (Deep Black) */
+  --app-bg: #000000;
+  --app-surface: #0A0A0A;
+  --app-surface-hover: #171717;
+  --app-border: #1F1F1F;
+  --app-text: #FFFFFF;
+  --app-text-muted: #A3A3A3;
+  --app-input: #0A0A0A;
 }
 
 @layer base {
   * {
-    @apply border-neutral-800;
+    @apply border-app-border transition-all duration-300;
   }
   
   body {
-    @apply bg-[#0F0F0F] text-white antialiased transition-colors duration-300;
+    @apply bg-app-bg text-app-text antialiased;
     font-feature-settings: "cv02", "cv03", "cv04", "cv11";
   }
 
-  .light-theme body {
-    @apply bg-neutral-50 text-neutral-900;
+  /* Asegurar que el texto blanco sobre fondos de marca permanezca blanco */
+  .bg-choop-orange, .bg-purple-600, .bg-rose-600, .bg-emerald-600, .btn-primary, .bg-emerald-500, .bg-rose-500, .bg-blue-600 {
+    @apply !text-white;
+  }
+}
+
+@layer components {
+  .glass-card {
+    @apply bg-app-surface rounded-2xl border border-app-border shadow-lg;
   }
 
-  .light-theme aside {
-    @apply bg-white border-neutral-200;
+  .btn-primary {
+    @apply px-6 py-3 bg-choop-orange text-white rounded-xl font-semibold transition-all hover:brightness-110 active:scale-95 disabled:opacity-50 disabled:pointer-events-none;
   }
 
-  .light-theme .glass-card, 
-  .light-theme .bg-[#1A1A1A],
-  .light-theme .bg-[#262626] {
-    @apply bg-white border-neutral-200 text-neutral-900 shadow-sm;
-  }
-
-  .light-theme .text-neutral-500 {
-    @apply text-neutral-600;
-  }
-
-  .light-theme .text-neutral-400 {
-    @apply text-neutral-700;
-  }
-
-  .light-theme .text-neutral-300 {
-    @apply text-neutral-800;
-  }
-
-  .light-theme input,
-  .light-theme select {
-    @apply bg-white border-neutral-300 text-neutral-900 focus:ring-2 focus:ring-purple-500/20;
-  }
-
-  .light-theme .btn-secondary {
-    @apply bg-neutral-100 text-neutral-900 hover:bg-neutral-200 border border-neutral-200;
-  }
-
-  .light-theme .border-neutral-800 {
-    @apply border-neutral-200;
-  }
-
-  .light-theme .bg-neutral-800,
-  .light-theme .bg-neutral-800\/50,
-  .light-theme .bg-neutral-800\/30 {
-    @apply bg-neutral-100 border-neutral-200;
+  .btn-secondary {
+    @apply px-6 py-3 bg-app-surface-hover text-app-text rounded-xl font-semibold border border-app-border transition-all hover:brightness-105 active:scale-95 disabled:opacity-50;
   }
 }
 
@@ -74,22 +69,10 @@
   }
   
   .custom-scrollbar::-webkit-scrollbar-thumb {
-    @apply bg-neutral-800 rounded-full;
+    @apply bg-app-surface-hover rounded-full;
   }
   
   .custom-scrollbar::-webkit-scrollbar-thumb:hover {
-    @apply bg-neutral-700;
-  }
-
-  .glass-card {
-    @apply bg-[#1A1A1A] rounded-2xl border border-neutral-800 shadow-lg;
-  }
-
-  .btn-primary {
-    @apply px-6 py-3 bg-[#F97316] text-white rounded-xl font-semibold transition-all hover:bg-[#EA580C] active:scale-95 disabled:opacity-50 disabled:pointer-events-none;
-  }
-
-  .btn-secondary {
-    @apply px-6 py-3 bg-[#262626] text-white rounded-xl font-semibold transition-all hover:bg-[#333] active:scale-95 disabled:opacity-50 disabled:pointer-events-none;
+    opacity: 0.8;
   }
 }

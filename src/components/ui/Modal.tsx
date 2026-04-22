@@ -28,15 +28,15 @@ export const Modal = ({ isOpen, onClose, title, children, className }: ModalProp
             animate={{ scale: 1, opacity: 1, y: 0 }}
             exit={{ scale: 0.95, opacity: 0, y: 20 }}
             className={cn(
-              "relative bg-[#1A1A1A] border border-neutral-800 rounded-2xl shadow-2xl w-full max-w-md overflow-hidden",
+              "relative bg-app-surface border border-app-border rounded-2xl shadow-2xl w-full max-w-md overflow-hidden",
               className
             )}
           >
-            <div className="p-6 border-b border-neutral-800 flex items-center justify-between">
-              <h3 className="text-xl font-bold text-white">{title}</h3>
+            <div className="p-6 border-b border-app-border flex items-center justify-between">
+              <h3 className="text-xl font-bold text-app-text">{title}</h3>
               <button 
                 onClick={onClose}
-                className="p-2 text-neutral-500 hover:text-white transition-colors rounded-lg hover:bg-neutral-800"
+                className="p-2 text-app-text-muted hover:text-app-text transition-colors rounded-lg hover:bg-app-surface-hover"
               >
                 <X size={20} />
               </button>

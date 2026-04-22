@@ -25,9 +25,33 @@
         "totalHours": { "type": "number" },
         "extensions": { "type": "number" },
         "date": { "type": "string" },
-        "status": { "type": "string", "enum": ["active", "completed"] }
+        "status": { "type": "string", "enum": ["active", "completed", "paused"] },
+        "breaks": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "startTime": { "type": "number" },
+              "endTime": { "type": "number" }
+            }
+          }
+        }
       },
       "required": ["id", "userId", "startTime", "totalHours", "status"]
+    },
+    "Schedule": {
+      "title": "Schedule",
+      "description": "Planificación semanal de turnos.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "userId": { "type": "string" },
+        "userName": { "type": "string" },
+        "date": { "type": "string" },
+        "startTime": { "type": "string" },
+        "endTime": { "type": "string" },
+        "status": { "type": "string", "enum": ["planned", "completed", "missed"] }
+      }
     }
   },
   "firestore": {
@@ -38,6 +62,10 @@
     "/shifts/{shiftId}": {
       "schema": "Shift",
       "description": "Colección global de turnos."
+    },
+    "/schedules/{scheduleId}": {
+      "schema": "Schedule",
+      "description": "Planificación de turnos."
     }
   }
 }

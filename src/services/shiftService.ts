@@ -96,7 +96,7 @@ export const shiftService = {
     }
   },
 
-  subscribeToActiveShift(userId: string, callback: (shift: Shift | null) => void) {
+  subscribeToActiveShift(userId: string, callback: (shift: Shift | null) => void, errorCallback?: (error: any) => void) {
     const q = query(
       collection(db, SHIFTS_COLLECTION),
       where('userId', '==', userId),
@@ -110,11 +110,12 @@ export const shiftService = {
         callback(snapshot.docs[0].data() as Shift);
       }
     }, (error) => {
+      if (errorCallback) errorCallback(error);
       handleFirestoreError(error, OperationType.GET, SHIFTS_COLLECTION);
     });
   },
 
-  subscribeToHistory(userId: string, callback: (shifts: Shift[]) => void) {
+  subscribeToHistory(userId: string, callback: (shifts: Shift[]) => void, errorCallback?: (error: any) => void) {
     const q = query(
       collection(db, SHIFTS_COLLECTION),
       where('userId', '==', userId),
@@ -125,12 +126,13 @@ export const shiftService = {
     return onSnapshot(q, (snapshot) => {
       callback(snapshot.docs.map(doc => doc.data() as Shift));
     }, (error) => {
+      if (errorCallback) errorCallback(error);
       handleFirestoreError(error, OperationType.LIST, SHIFTS_COLLECTION);
     });
   },
 
   // Admin Methods
-  subscribeToAllShifts(callback: (shifts: Shift[]) => void) {
+  subscribeToAllShifts(callback: (shifts: Shift[]) => void, errorCallback?: (error: any) => void) {
     const q = query(
       collection(db, SHIFTS_COLLECTION),
       orderBy('startTime', 'desc')
@@ -139,6 +141,7 @@ export const shiftService = {
     return onSnapshot(q, (snapshot) => {
       callback(snapshot.docs.map(doc => doc.data() as Shift));
     }, (error) => {
+      if (errorCallback) errorCallback(error);
       handleFirestoreError(error, OperationType.LIST, SHIFTS_COLLECTION);
     });
   },
@@ -153,10 +156,11 @@ export const shiftService = {
     }
   },
 
-  subscribeToUsers(callback: (users: User[]) => void) {
+  subscribeToUsers(callback: (users: User[]) => void, errorCallback?: (error: any) => void) {
     return onSnapshot(collection(db, 'users'), (snapshot) => {
       callback(snapshot.docs.map(doc => doc.data() as User));
     }, (error) => {
+      if (errorCallback) errorCallback(error);
       handleFirestoreError(error, OperationType.LIST, 'users');
     });
   },
@@ -203,7 +207,7 @@ export const shiftService = {
     }
   },
 
-  subscribeToNotifications(callback: (notifications: Notification[]) => void) {
+  subscribeToNotifications(callback: (notifications: Notification[]) => void, errorCallback?: (error: any) => void) {
     const q = query(
       collection(db, 'notifications'),
       orderBy('timestamp', 'desc')
@@ -212,6 +216,7 @@ export const shiftService = {
     return onSnapshot(q, (snapshot) => {
       callback(snapshot.docs.map(doc => doc.data() as Notification));
     }, (error) => {
+      if (errorCallback) errorCallback(error);
       handleFirestoreError(error, OperationType.LIST, 'notifications');
     });
   },

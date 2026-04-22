@@ -13,6 +13,11 @@ export interface User {
   status?: 'active' | 'inactive';
 }
 
+export interface Break {
+  startTime: number;
+  endTime?: number;
+}
+
 export interface Shift {
   id: string;
   userId: string;
@@ -22,10 +27,22 @@ export interface Shift {
   totalHours: number;
   extensions: number;
   date: string;
-  status: 'active' | 'completed';
+  status: 'active' | 'completed' | 'paused';
+  breaks?: Break[];
   comment?: string;
   deletedAt?: number;
   deletionComment?: string;
+}
+
+export interface Schedule {
+  id: string;
+  userId: string;
+  userName: string;
+  date: string;
+  startTime: string; // Formato HH:mm
+  endTime: string;   // Formato HH:mm
+  status: 'planned' | 'completed' | 'missed';
+  createdAt: number;
 }
 
 export interface Notification {
